@@ -1,0 +1,1547 @@
+<!doctype html>
+<html lang="id" class="h-full">
+ <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Improvement Tracker - Supabase Edition</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    body {
+      box-sizing: border-box;
+    }
+    .toast {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background: #10b981;
+      color: white;
+      padding: 16px 24px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      z-index: 1000;
+      animation: slideIn 0.3s ease-out;
+    }
+    .toast.error {
+      background: #ef4444;
+    }
+    @keyframes slideIn {
+      from {
+        transform: translateX(400px);
+        opacity: 0;
+      }
+      to {
+        transform: translateX(0);
+        opacity: 1;
+      }
+    }
+    .image-preview {
+      max-width: 200px;
+      max-height: 200px;
+      object-fit: cover;
+      border-radius: 8px;
+    }
+    .modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 999;
+      animation: fadeIn 0.2s ease-out;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    .modal-content {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      max-width: 500px;
+      width: 90%;
+      max-height: 90vh;
+      overflow-y: auto;
+      animation: slideUp 0.3s ease-out;
+    }
+    @keyframes slideUp {
+      from {
+        transform: translateY(50px);
+        opacity: 0;
+      }
+      to {
+        transform: translateY(0);
+        opacity: 1;
+      }
+    }
+    .filter-btn {
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      transition: all 0.2s;
+      cursor: pointer;
+      border: 2px solid transparent;
+    }
+    .filter-btn.active {
+      border-color: #2563eb;
+      background: #dbeafe;
+      color: #1e40af;
+    }
+  </style>
+  <style>@view-transition { navigation: auto; }</style>
+  <script src="/_sdk/data_sdk.js" type="text/javascript"></script>
+  <script src="/_sdk/element_sdk.js" type="text/javascript"></script>
+ </head>
+ <body class="h-full bg-gradient-to-br from-blue-50 to-indigo-100">
+  <div id="app" class="h-full w-full overflow-auto"></div>
+  <div id="modal-root"></div>
+  <script>
+    // Supabase Configuration
+    const SUPABASE_URL = 'https://ueitcvbozhhxavkxiuou.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVlaXRjdmJvemhoeGF2a3hpdW91Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU4NTI1NTgsImV4cCI6MjA4MTQyODU1OH0.5HDE1bORXz_48SxX52N_AP-mCvO3AA-jXUXddyQSnN4';
+    const IMPROVEMENTS_TABLE = 'improvements';
+    const USERS_TABLE = 'users';
+    const BUCKET_NAME = 'improvement-images';
+
+    // Initialize Supabase
+    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    let currentUser = null;
+    let allImprovements = [];
+    let allUsers = [];
+    let currentView = 'login';
+    let isLoading = false;
+    let currentFilter = 'all';
+    let dateFrom = null;
+    let dateTo = null;
+
+    // Map jabatan to level
+    function mapJabatanToLevel(jabatan) {
+      const jabatanLower = jabatan.toLowerCase();
+      if (jabatanLower.includes('director') || jabatanLower.includes('direktur')) return 4;
+      if (jabatanLower.includes('manager') || jabatanLower.includes('manajer')) return 3;
+      if (jabatanLower.includes('supervisor') || jabatanLower.includes('spv')) return 2;
+      return 1; // Default: Operator/Staff
+    }
+
+    // Toast notification
+    function showToast(message, isError = false) {
+      const toast = document.createElement('div');
+      toast.className = `toast ${isError ? 'error' : ''}`;
+      toast.textContent = message;
+      document.body.appendChild(toast);
+      setTimeout(() => toast.remove(), 3000);
+    }
+
+    // Modal functions
+    function showModal(title, content, onConfirm) {
+      const modalRoot = document.getElementById('modal-root');
+      modalRoot.innerHTML = `
+        <div class="modal-overlay" onclick="if(event.target === this) closeModal()">
+          <div class="modal-content">
+            <h3 class="text-xl font-bold text-gray-800 mb-4">${title}</h3>
+            ${content}
+            <div class="flex gap-3 mt-6">
+              <button onclick="closeModal()" class="flex-1 bg-gray-500 hover:bg-gray-600 text-white py-2 rounded-lg transition duration-200">
+                Batal
+              </button>
+              <button onclick="confirmModalAction()" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg transition duration-200">
+                Konfirmasi
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+      window.modalConfirmCallback = onConfirm;
+    }
+
+    function closeModal() {
+      document.getElementById('modal-root').innerHTML = '';
+      window.modalConfirmCallback = null;
+    }
+
+    function confirmModalAction() {
+      if (window.modalConfirmCallback) {
+        const input = document.getElementById('modal-input');
+        const value = input ? input.value : null;
+        window.modalConfirmCallback(value);
+      }
+      closeModal();
+    }
+
+    // Login with Supabase
+    async function login(nik, password) {
+      try {
+        const { data, error } = await supabase
+          .from(USERS_TABLE)
+          .select('*')
+          .eq('nik', nik)
+          .eq('password', password)
+          .single();
+        
+        if (error || !data) {
+          showToast('NIK atau Password salah!', true);
+          return false;
+        }
+        
+        currentUser = {
+          nik: data.nik,
+          name: data.name,
+          level: data.level,
+          departemen: data.departemen,
+          jabatan: data.jabatan
+        };
+        
+        showToast(`Selamat datang, ${data.name}!`);
+        await loadImprovements();
+        if (currentUser.level === 4) {
+          await loadUsers();
+        }
+        return true;
+      } catch (error) {
+        console.error('Login error:', error);
+        showToast(`Error saat login: ${error.message}`, true);
+        return false;
+      }
+    }
+
+    function logout() {
+      currentUser = null;
+      allImprovements = [];
+      allUsers = [];
+      currentView = 'login';
+      currentFilter = 'all';
+      render();
+    }
+
+    // Load users (for admin)
+    async function loadUsers() {
+      try {
+        const { data, error } = await supabase
+          .from(USERS_TABLE)
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (error) throw error;
+        
+        allUsers = data || [];
+      } catch (error) {
+        console.error('Error loading users:', error);
+        showToast('Gagal memuat data user!', true);
+      }
+    }
+
+    // Upload CSV and import users
+    async function uploadCSV(file) {
+      isLoading = true;
+      render();
+      
+      try {
+        const text = await file.text();
+        const lines = text.split('\n').filter(line => line.trim());
+        
+        if (lines.length < 2) {
+          showToast('File CSV kosong atau tidak valid!', true);
+          isLoading = false;
+          render();
+          return;
+        }
+
+        // Parse header
+        const header = lines[0].split(',').map(h => h.trim().toUpperCase());
+        const nikIndex = header.indexOf('NIK');
+        const namaIndex = header.indexOf('NAMA');
+        const deptIndex = header.indexOf('DEPARTEMEN');
+        const jabatanIndex = header.indexOf('JABATAN');
+        const passIndex = header.indexOf('PASSWORD');
+
+        if (nikIndex === -1 || namaIndex === -1 || passIndex === -1) {
+          showToast('Format CSV harus punya kolom: NIK, NAMA, PASSWORD', true);
+          isLoading = false;
+          render();
+          return;
+        }
+
+        // Parse data
+        const usersToInsert = [];
+        let successCount = 0;
+        let errorCount = 0;
+        let updateCount = 0;
+        let insertCount = 0;
+
+        for (let i = 1; i < lines.length; i++) {
+          const values = lines[i].split(',').map(v => v.trim());
+          
+          if (values.length < 3) continue;
+
+          const nik = values[nikIndex];
+          const name = values[namaIndex];
+          const departemen = deptIndex !== -1 ? values[deptIndex] : '';
+          const jabatan = jabatanIndex !== -1 ? values[jabatanIndex] : 'Staff';
+          const password = values[passIndex];
+          const level = mapJabatanToLevel(jabatan);
+
+          if (!nik || !name || !password) {
+            errorCount++;
+            continue;
+          }
+
+          // Check if user already exists
+          const { data: existingUser } = await supabase
+            .from(USERS_TABLE)
+            .select('*')
+            .eq('nik', nik)
+            .single();
+
+          if (existingUser) {
+            // UPDATE existing user
+            const { error: updateError } = await supabase
+              .from(USERS_TABLE)
+              .update({
+                name,
+                departemen,
+                jabatan,
+                password,
+                level
+              })
+              .eq('nik', nik);
+
+            if (updateError) {
+              console.error(`Error updating user ${nik}:`, updateError);
+              errorCount++;
+            } else {
+              updateCount++;
+            }
+          } else {
+            // Collect for INSERT
+            usersToInsert.push({
+              nik,
+              name,
+              departemen,
+              jabatan,
+              password,
+              level
+            });
+          }
+        }
+
+        // Bulk insert new users
+        if (usersToInsert.length > 0) {
+          const { error } = await supabase
+            .from(USERS_TABLE)
+            .insert(usersToInsert);
+
+          if (error) {
+            console.error('Bulk insert error:', error);
+            errorCount += usersToInsert.length;
+          } else {
+            insertCount = usersToInsert.length;
+          }
+        }
+
+        successCount = updateCount + insertCount;
+
+        if (successCount > 0) {
+          showToast(`✅ Berhasil! Insert: ${insertCount}, Update: ${updateCount}${errorCount > 0 ? `, Gagal: ${errorCount}` : ''}`);
+          await loadUsers();
+          currentView = 'users';
+        } else {
+          showToast('Tidak ada perubahan data!', true);
+        }
+
+      } catch (error) {
+        console.error('Upload CSV error:', error);
+        showToast(`Gagal upload: ${error.message}`, true);
+      } finally {
+        isLoading = false;
+        render();
+      }
+    }
+
+    // Load improvements from Supabase
+    async function loadImprovements() {
+      try {
+        const { data, error } = await supabase
+          .from(IMPROVEMENTS_TABLE)
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (error) throw error;
+        
+        allImprovements = data || [];
+        render();
+      } catch (error) {
+        console.error('Error loading improvements:', error);
+        showToast('Gagal memuat data!', true);
+      }
+    }
+
+    // Upload image to Supabase Storage
+    async function uploadImageToSupabase(file, improvementId, type) {
+      if (!file) return null;
+      
+      if (!['image/jpeg', 'image/png', 'image/jpg'].includes(file.type)) {
+        showToast('Format file harus JPG atau PNG!', true);
+        return null;
+      }
+      
+      if (file.size > 5 * 1024 * 1024) {
+        showToast('Ukuran file maksimal 5MB!', true);
+        return null;
+      }
+
+      try {
+        const compressedFile = await compressImage(file);
+        const fileExt = file.name.split('.').pop();
+        const fileName = `${improvementId}_${type}_${Date.now()}.${fileExt}`;
+        const filePath = `${fileName}`;
+
+        const { data, error } = await supabase.storage
+          .from(BUCKET_NAME)
+          .upload(filePath, compressedFile, {
+            cacheControl: '3600',
+            upsert: false
+          });
+
+        if (error) throw error;
+
+        const { data: urlData } = supabase.storage
+          .from(BUCKET_NAME)
+          .getPublicUrl(filePath);
+
+        return urlData.publicUrl;
+      } catch (error) {
+        console.error('Upload error:', error);
+        showToast(`Gagal upload gambar: ${error.message}`, true);
+        return null;
+      }
+    }
+
+    function compressImage(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            let width = img.width;
+            let height = img.height;
+            const maxSize = 1200;
+            
+            if (width > height && width > maxSize) {
+              height = (height * maxSize) / width;
+              width = maxSize;
+            } else if (height > maxSize) {
+              width = (width * maxSize) / height;
+              height = maxSize;
+            }
+            
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, width, height);
+            
+            canvas.toBlob((blob) => {
+              resolve(blob);
+            }, 'image/jpeg', 0.8);
+          };
+          img.onerror = reject;
+          img.src = e.target.result;
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    // Create improvement
+    async function createImprovement(formData, isDraft) {
+      isLoading = true;
+      const submitBtn = document.querySelector('form button[type="submit"]');
+      const draftBtn = document.getElementById('saveDraftBtn');
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = '⏳ Mengirim...';
+      }
+      if (draftBtn) {
+        draftBtn.disabled = true;
+        draftBtn.textContent = '⏳ Menyimpan...';
+      }
+
+      try {
+        const improvementId = `IMP-${Date.now()}`;
+
+        let beforeImageUrl = null;
+        let afterImageUrl = null;
+
+        if (formData.beforeImage) {
+          beforeImageUrl = await uploadImageToSupabase(formData.beforeImage, improvementId, 'before');
+        }
+
+        if (formData.afterImage) {
+          afterImageUrl = await uploadImageToSupabase(formData.afterImage, improvementId, 'after');
+        }
+
+        const improvement = {
+          id: improvementId,
+          title: formData.title,
+          tema: formData.tema,
+          room_name: formData.room_name,
+          machine_name: formData.machine_name || null,
+          problem: formData.problem,
+          solution: formData.solution,
+          total_cost: formData.total_cost,
+          cost_detail: formData.cost_detail,
+          total_benefit: formData.total_benefit,
+          benefit_detail: formData.benefit_detail,
+          before_image_url: beforeImageUrl,
+          after_image_url: afterImageUrl,
+          status: isDraft ? 'draft' : 'waiting_l2',
+          creator_nik: currentUser.nik,
+          creator_name: currentUser.name,
+          submitted_at: isDraft ? null : new Date().toISOString(),
+          current_level: isDraft ? 0 : 2,
+          approved_by_l2: null,
+          approved_by_l3: null,
+          approved_by_l4: null,
+          approved_at_l2: null,
+          approved_at_l3: null,
+          approved_at_l4: null,
+          rejection_reason: null,
+          rejected_by: null,
+          rejected_at: null
+        };
+
+        const { data, error } = await supabase
+          .from(IMPROVEMENTS_TABLE)
+          .insert([improvement])
+          .select();
+
+        if (error) throw error;
+
+        showToast(isDraft ? 'Draft berhasil disimpan!' : 'Improvement berhasil disubmit!');
+        await loadImprovements();
+        currentView = 'dashboard';
+        render();
+      } catch (error) {
+        console.error('Create error:', error);
+        showToast(`Gagal menyimpan: ${error.message}`, true);
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = '🚀 Submit';
+        }
+        if (draftBtn) {
+          draftBtn.disabled = false;
+          draftBtn.textContent = '💾 Simpan Draft';
+        }
+      } finally {
+        isLoading = false;
+      }
+    }
+
+    // Update improvement
+    async function updateImprovement(improvement) {
+      isLoading = true;
+      render();
+      
+      try {
+        const { error } = await supabase
+          .from(IMPROVEMENTS_TABLE)
+          .update(improvement)
+          .eq('id', improvement.id);
+
+        if (error) throw error;
+
+        showToast('Improvement berhasil diupdate!');
+        await loadImprovements();
+      } catch (error) {
+        console.error('Update error:', error);
+        showToast(`Gagal update: ${error.message}`, true);
+      } finally {
+        isLoading = false;
+      }
+    }
+
+    // Delete improvement
+    async function deleteImprovement(improvement) {
+      isLoading = true;
+      render();
+      
+      try {
+        if (improvement.before_image_url) {
+          const beforePath = improvement.before_image_url.split('/').pop();
+          await supabase.storage.from(BUCKET_NAME).remove([beforePath]);
+        }
+        if (improvement.after_image_url) {
+          const afterPath = improvement.after_image_url.split('/').pop();
+          await supabase.storage.from(BUCKET_NAME).remove([afterPath]);
+        }
+
+        const { error } = await supabase
+          .from(IMPROVEMENTS_TABLE)
+          .delete()
+          .eq('id', improvement.id);
+
+        if (error) throw error;
+
+        showToast('Improvement berhasil dihapus!');
+        await loadImprovements();
+      } catch (error) {
+        console.error('Delete error:', error);
+        showToast(`Gagal hapus: ${error.message}`, true);
+      } finally {
+        isLoading = false;
+      }
+    }
+
+    // Approve improvement
+    async function approveImprovement(id) {
+      const improvement = allImprovements.find(imp => imp.id === id);
+      if (!improvement) return;
+
+      const updates = {
+        [`approved_by_l${currentUser.level}`]: currentUser.name,
+        [`approved_at_l${currentUser.level}`]: new Date().toISOString()
+      };
+
+      if (currentUser.level === 2) {
+        updates.status = 'waiting_l3';
+        updates.current_level = 3;
+      } else if (currentUser.level === 3) {
+        updates.status = 'waiting_l4';
+        updates.current_level = 4;
+      } else if (currentUser.level === 4) {
+        updates.status = 'approved';
+        updates.current_level = 5;
+      }
+
+      const updatedImprovement = { ...improvement, ...updates };
+      await updateImprovement(updatedImprovement);
+    }
+
+    // Reject improvement
+    function showRejectForm(id) {
+      showModal(
+        '❌ Reject Improvement',
+        '<label class="block text-sm font-medium text-gray-700 mb-2">Alasan Penolakan:</label><textarea id="modal-input" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent" rows="4" placeholder="Jelaskan alasan penolakan..."></textarea>',
+        (reason) => {
+          if (reason && reason.trim()) {
+            rejectImprovement(id, reason.trim());
+          } else {
+            showToast('Alasan penolakan harus diisi!', true);
+          }
+        }
+      );
+    }
+
+    async function rejectImprovement(id, reason) {
+      const improvement = allImprovements.find(imp => imp.id === id);
+      if (!improvement) return;
+
+      const updatedImprovement = {
+        ...improvement,
+        status: 'rejected',
+        rejection_reason: reason,
+        rejected_by: currentUser.name,
+        rejected_at: new Date().toISOString()
+      };
+
+      await updateImprovement(updatedImprovement);
+    }
+
+    // Delete improvement with confirmation
+    function confirmDelete(id) {
+      showModal(
+        '🗑️ Hapus Improvement',
+        '<p class="text-gray-700">Apakah Anda yakin ingin menghapus improvement ini? Tindakan ini tidak dapat dibatalkan.</p>',
+        () => {
+          const improvement = allImprovements.find(imp => imp.id === id);
+          if (improvement) {
+            deleteImprovement(improvement);
+          }
+        }
+      );
+    }
+
+    function editDraft(id) {
+      showToast('Fitur edit sedang dalam pengembangan', true);
+    }
+
+    // Filter functions
+    function setFilter(filter) {
+      currentFilter = filter;
+      render();
+    }
+
+    function filterByDate() {
+      const fromInput = document.getElementById('dateFrom');
+      const toInput = document.getElementById('dateTo');
+      
+      dateFrom = fromInput ? fromInput.value : null;
+      dateTo = toInput ? toInput.value : null;
+      
+      render();
+    }
+
+    function resetDateFilter() {
+      dateFrom = null;
+      dateTo = null;
+      const fromInput = document.getElementById('dateFrom');
+      const toInput = document.getElementById('dateTo');
+      if (fromInput) fromInput.value = '';
+      if (toInput) toInput.value = '';
+      render();
+    }
+
+    function getFilteredImprovements() {
+      let filtered = currentView === 'my-improvements' 
+        ? allImprovements.filter(imp => imp.creator_nik === currentUser.nik)
+        : allImprovements;
+      
+      if (currentFilter !== 'all') {
+        filtered = filtered.filter(imp => imp.status === currentFilter);
+      }
+      
+      if (dateFrom || dateTo) {
+        filtered = filtered.filter(imp => {
+          const impDate = new Date(imp.created_at);
+          const impDateStr = impDate.toISOString().split('T')[0];
+          
+          if (dateFrom && dateTo) {
+            return impDateStr >= dateFrom && impDateStr <= dateTo;
+          } else if (dateFrom) {
+            return impDateStr >= dateFrom;
+          } else if (dateTo) {
+            return impDateStr <= dateTo;
+          }
+          return true;
+        });
+      }
+      
+      return filtered;
+    }
+
+    // Render functions
+    function renderLogin() {
+      return `
+        <div class="min-h-full flex items-center justify-center p-4">
+          <div class="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md">
+            <div class="text-center mb-8">
+              <h1 class="text-3xl font-bold text-gray-800 mb-2">🚀 Improvement Tracker</h1>
+              <p class="text-gray-600">Sistem Manajemen Perbaikan</p>
+              <p class="text-xs text-blue-600 mt-2">Powered by Supabase</p>
+            </div>
+            <form id="loginForm" class="space-y-6">
+              <div>
+                <label for="nik" class="block text-sm font-medium text-gray-700 mb-2">NIK</label>
+                <input type="text" id="nik" required 
+                  class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="Masukkan NIK">
+              </div>
+              <div>
+                <label for="password" class="block text-sm font-medium text-gray-700 mb-2">Password</label>
+                <input type="password" id="password" required 
+                  class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="Masukkan Password">
+              </div>
+              <button type="submit" 
+                class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-lg transition duration-200">
+                Login
+              </button>
+            </form>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderDashboard() {
+      const myImprovements = allImprovements.filter(imp => imp.creator_nik === currentUser.nik);
+      const pendingApproval = allImprovements.filter(imp => {
+        if (currentUser.level === 2 && imp.status === 'waiting_l2') return true;
+        if (currentUser.level === 3 && imp.status === 'waiting_l3') return true;
+        if (currentUser.level === 4 && imp.status === 'waiting_l4') return true;
+        return false;
+      });
+
+      const stats = {
+        total: myImprovements.length,
+        draft: myImprovements.filter(i => i.status === 'draft').length,
+        pending: myImprovements.filter(i => i.status.includes('waiting')).length,
+        approved: myImprovements.filter(i => i.status === 'approved').length,
+        rejected: myImprovements.filter(i => i.status === 'rejected').length
+      };
+
+      return `
+        <div class="min-h-full p-6">
+          <div class="max-w-7xl mx-auto">
+            <!-- Header -->
+            <div class="bg-white rounded-xl shadow-lg p-6 mb-6">
+              <div class="flex justify-between items-center">
+                <div>
+                  <h1 class="text-2xl font-bold text-gray-800">Dashboard</h1>
+                  <p class="text-gray-600 mt-1">${currentUser.name} - ${currentUser.jabatan || 'Level ' + currentUser.level}</p>
+                  <p class="text-sm text-gray-500">${currentUser.departemen || ''} (NIK: ${currentUser.nik})</p>
+                </div>
+                <button onclick="logout()" class="bg-red-500 hover:bg-red-600 text-white px-6 py-2 rounded-lg transition duration-200">
+                  Logout
+                </button>
+              </div>
+            </div>
+
+            <!-- Stats -->
+            <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+              <div class="bg-blue-500 text-white rounded-xl p-4 shadow-lg">
+                <div class="text-3xl font-bold">${stats.total}</div>
+                <div class="text-sm opacity-90">Total</div>
+              </div>
+              <div class="bg-yellow-500 text-white rounded-xl p-4 shadow-lg">
+                <div class="text-3xl font-bold">${stats.draft}</div>
+                <div class="text-sm opacity-90">Draft</div>
+              </div>
+              <div class="bg-orange-500 text-white rounded-xl p-4 shadow-lg">
+                <div class="text-3xl font-bold">${stats.pending}</div>
+                <div class="text-sm opacity-90">Pending</div>
+              </div>
+              <div class="bg-green-500 text-white rounded-xl p-4 shadow-lg">
+                <div class="text-3xl font-bold">${stats.approved}</div>
+                <div class="text-sm opacity-90">Approved</div>
+              </div>
+              <div class="bg-red-500 text-white rounded-xl p-4 shadow-lg">
+                <div class="text-3xl font-bold">${stats.rejected}</div>
+                <div class="text-sm opacity-90">Rejected</div>
+              </div>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="flex gap-4 mb-6 flex-wrap">
+              ${currentUser.level === 1 ? `
+                <button onclick="currentView='create'; render();" 
+                  class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-semibold transition duration-200 flex items-center gap-2">
+                  ➕ Buat Improvement Baru
+                </button>
+              ` : ''}
+              <button onclick="currentView='my-improvements'; render();" 
+                class="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-lg font-semibold transition duration-200">
+                📋 Improvement Saya (${myImprovements.length})
+              </button>
+              ${currentUser.level > 1 ? `
+                <button onclick="currentView='approvals'; render();" 
+                  class="bg-purple-600 hover:bg-purple-700 text-white px-6 py-3 rounded-lg font-semibold transition duration-200">
+                  ✅ Perlu Approval (${pendingApproval.length})
+                </button>
+              ` : ''}
+              ${currentUser.level === 4 ? `
+                <button onclick="currentView='users'; render();" 
+                  class="bg-teal-600 hover:bg-teal-700 text-white px-6 py-3 rounded-lg font-semibold transition duration-200">
+                  👥 Kelola User (${allUsers.length})
+                </button>
+              ` : ''}
+            </div>
+
+            <!-- Recent Improvements -->
+            <div class="bg-white rounded-xl shadow-lg p-6">
+              <h2 class="text-xl font-bold text-gray-800 mb-4">Improvement Terbaru</h2>
+              ${myImprovements.length === 0 ? `
+                <p class="text-gray-500 text-center py-8">Belum ada improvement</p>
+              ` : `
+                <div class="space-y-3">
+                  ${myImprovements.slice(0, 5).map(imp => `
+                    <div class="border border-gray-200 rounded-lg p-4 hover:shadow-md transition duration-200">
+                      <div class="flex justify-between items-start">
+                        <div class="flex-1">
+                          <h3 class="font-semibold text-gray-800">${imp.title}</h3>
+                          <p class="text-sm text-gray-600 mt-1">Tema: ${imp.tema}</p>
+                          <p class="text-sm text-gray-500 mt-1">${new Date(imp.created_at).toLocaleDateString('id-ID')}</p>
+                        </div>
+                        <span class="px-3 py-1 rounded-full text-xs font-semibold ${getStatusColor(imp.status)}">
+                          ${getStatusText(imp.status)}
+                        </span>
+                      </div>
+                    </div>
+                  `).join('')}
+                </div>
+              `}
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderUserManagement() {
+      return `
+        <div class="min-h-full p-6">
+          <div class="max-w-7xl mx-auto">
+            <div class="bg-white rounded-xl shadow-lg p-6 mb-6">
+              <div class="flex justify-between items-center">
+                <h1 class="text-2xl font-bold text-gray-800">👥 Kelola User</h1>
+                <button onclick="currentView='dashboard'; render();" 
+                  class="bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded-lg transition duration-200">
+                  ← Kembali
+                </button>
+              </div>
+            </div>
+
+            <!-- Upload CSV -->
+            <div class="bg-gradient-to-r from-blue-500 to-indigo-600 rounded-xl shadow-lg p-6 mb-6 text-white">
+              <h2 class="text-xl font-bold mb-2">📤 Upload User dari CSV (INSERT + UPDATE)</h2>
+              <p class="text-sm mb-4 opacity-90">Format: NIK, NAMA, DEPARTEMEN, JABATAN, PASSWORD</p>
+              <div class="bg-white rounded-lg p-4">
+                <input type="file" id="csvFileInput" accept=".csv,.txt" 
+                  class="w-full text-gray-800 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700">
+              </div>
+              <div class="mt-3 bg-white bg-opacity-20 rounded-lg p-3 text-xs">
+                <p class="font-semibold mb-1">📋 Contoh format CSV:</p>
+                <code class="block bg-black bg-opacity-30 rounded p-2 mt-1">
+                  NIK,NAMA,DEPARTEMEN,JABATAN,PASSWORD<br>
+                  12345,Ahmad Rizki,Produksi,Operator,pass123<br>
+                  67890,Budi Santoso,Produksi,Supervisor,pass456<br>
+                  11111,Citra Dewi,QC,Manager,pass789
+                </code>
+                <p class="mt-2"><strong>✅ NIK Baru = INSERT | ✅ NIK Lama = UPDATE</strong></p>
+                <p class="mt-1"><strong>Level otomatis:</strong> Operator=L1, Supervisor=L2, Manager=L3, Director=L4</p>
+              </div>
+            </div>
+
+            <!-- User List -->
+            <div class="bg-white rounded-xl shadow-lg p-6">
+              <h2 class="text-xl font-bold text-gray-800 mb-4">Daftar User (${allUsers.length})</h2>
+              ${allUsers.length === 0 ? `
+                <p class="text-gray-500 text-center py-8">Belum ada user</p>
+              ` : `
+                <div class="overflow-x-auto">
+                  <table class="w-full">
+                    <thead>
+                      <tr class="bg-gray-100 text-left">
+                        <th class="px-4 py-3 font-semibold text-gray-700">NIK</th>
+                        <th class="px-4 py-3 font-semibold text-gray-700">Nama</th>
+                        <th class="px-4 py-3 font-semibold text-gray-700">Departemen</th>
+                        <th class="px-4 py-3 font-semibold text-gray-700">Jabatan</th>
+                        <th class="px-4 py-3 font-semibold text-gray-700">Level</th>
+                        <th class="px-4 py-3 font-semibold text-gray-700">Tanggal</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${allUsers.map(user => `
+                        <tr class="border-b border-gray-200 hover:bg-gray-50">
+                          <td class="px-4 py-3 text-sm text-gray-800">${user.nik}</td>
+                          <td class="px-4 py-3 text-sm text-gray-800 font-semibold">${user.name}</td>
+                          <td class="px-4 py-3 text-sm text-gray-600">${user.departemen || '-'}</td>
+                          <td class="px-4 py-3 text-sm text-gray-600">${user.jabatan || '-'}</td>
+                          <td class="px-4 py-3">
+                            <span class="px-2 py-1 rounded-full text-xs font-semibold ${getLevelColor(user.level)}">
+                              Level ${user.level}
+                            </span>
+                          </td>
+                          <td class="px-4 py-3 text-xs text-gray-500">
+                            ${new Date(user.created_at).toLocaleDateString('id-ID')}
+                          </td>
+                        </tr>
+                      `).join('')}
+                    </tbody>
+                  </table>
+                </div>
+              `}
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function getLevelColor(level) {
+      const colors = {
+        1: 'bg-green-100 text-green-800',
+        2: 'bg-blue-100 text-blue-800',
+        3: 'bg-purple-100 text-purple-800',
+        4: 'bg-red-100 text-red-800'
+      };
+      return colors[level] || 'bg-gray-100 text-gray-800';
+    }
+
+    function renderCreateForm() {
+      return `
+        <div class="min-h-full p-6">
+          <div class="max-w-4xl mx-auto">
+            <div class="bg-white rounded-xl shadow-lg p-8">
+              <div class="flex justify-between items-center mb-6">
+                <h1 class="text-2xl font-bold text-gray-800">📝 Buat Improvement Baru</h1>
+                <button onclick="currentView='dashboard'; render();" 
+                  class="bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded-lg transition duration-200">
+                  ← Kembali
+                </button>
+              </div>
+
+              <form id="createForm" class="space-y-6">
+                <div class="bg-blue-50 rounded-lg p-4 border border-blue-200">
+                  <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
+                      <label class="block text-sm font-medium text-gray-700 mb-1">Nama Lengkap</label>
+                      <input type="text" value="${currentUser.name}" readonly 
+                        class="w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded-lg text-gray-600">
+                    </div>
+                    <div>
+                      <label class="block text-sm font-medium text-gray-700 mb-1">NIK</label>
+                      <input type="text" value="${currentUser.nik}" readonly 
+                        class="w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded-lg text-gray-600">
+                    </div>
+                    <div>
+                      <label class="block text-sm font-medium text-gray-700 mb-1">Jabatan</label>
+                      <input type="text" value="${currentUser.jabatan || 'Level ' + currentUser.level}" readonly 
+                        class="w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded-lg text-gray-600">
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label for="title" class="block text-sm font-medium text-gray-700 mb-2">
+                    Judul Improvement <span class="text-red-500">*</span>
+                  </label>
+                  <input type="text" id="title" name="title" required 
+                    class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="Contoh: Perbaikan Sistem Conveyor Line A">
+                </div>
+
+                <div>
+                  <label for="tema" class="block text-sm font-medium text-gray-700 mb-2">
+                    Tema <span class="text-red-500">*</span>
+                  </label>
+                  <input type="text" id="tema" name="tema" required 
+                    class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="Contoh: Efisiensi Produksi">
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label for="room_name" class="block text-sm font-medium text-gray-700 mb-2">
+                      Nama Ruangan <span class="text-red-500">*</span>
+                    </label>
+                    <input type="text" id="room_name" name="room_name" required 
+                      class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      placeholder="Contoh: Ruang Produksi A">
+                  </div>
+                  <div>
+                    <label for="machine_name" class="block text-sm font-medium text-gray-700 mb-2">
+                      Nama Mesin
+                    </label>
+                    <input type="text" id="machine_name" name="machine_name" 
+                      class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      placeholder="Contoh: Mesin Conveyor A-01">
+                  </div>
+                </div>
+
+                <div>
+                  <label for="problem" class="block text-sm font-medium text-gray-700 mb-2">
+                    Permasalahan Yang Ada <span class="text-red-500">*</span>
+                  </label>
+                  <textarea id="problem" name="problem" rows="4" required 
+                    class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="Jelaskan permasalahan yang ada secara detail..."></textarea>
+                </div>
+
+                <div>
+                  <label for="solution" class="block text-sm font-medium text-gray-700 mb-2">
+                    Improvement Yang Dilakukan <span class="text-red-500">*</span>
+                  </label>
+                  <textarea id="solution" name="solution" rows="4" required 
+                    class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="Jelaskan solusi/improvement yang dilakukan..."></textarea>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label for="total_cost" class="block text-sm font-medium text-gray-700 mb-2">
+                      Total Biaya <span class="text-red-500">*</span>
+                    </label>
+                    <input type="text" id="total_cost" name="total_cost" required 
+                      class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      placeholder="Contoh: Rp 5.000.000">
+                  </div>
+                  <div>
+                    <label for="total_benefit" class="block text-sm font-medium text-gray-700 mb-2">
+                      Total Keuntungan (Cost Saving) <span class="text-red-500">*</span>
+                    </label>
+                    <input type="text" id="total_benefit" name="total_benefit" required 
+                      class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      placeholder="Contoh: Rp 15.000.000">
+                  </div>
+                </div>
+
+                <div>
+                  <label for="cost_detail" class="block text-sm font-medium text-gray-700 mb-2">
+                    Uraian Biaya <span class="text-red-500">*</span>
+                  </label>
+                  <textarea id="cost_detail" name="cost_detail" rows="3" required 
+                    class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="Rincian biaya yang dikeluarkan..."></textarea>
+                </div>
+
+                <div>
+                  <label for="benefit_detail" class="block text-sm font-medium text-gray-700 mb-2">
+                    Uraian Keuntungan (Cost Saving) <span class="text-red-500">*</span>
+                  </label>
+                  <textarea id="benefit_detail" name="benefit_detail" rows="3" required 
+                    class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="Rincian keuntungan/penghematan yang didapat..."></textarea>
+                </div>
+
+                <div class="bg-green-50 border border-green-300 rounded-lg p-4 mb-4">
+                  <p class="text-sm text-green-800 font-semibold">📸 Upload Gambar (Max 5MB per foto)</p>
+                  <p class="text-xs text-green-700 mt-1">Gambar akan di-upload ke Supabase Storage dengan kompresi otomatis!</p>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label for="before_image" class="block text-sm font-medium text-gray-700 mb-2">
+                      Foto Kondisi Sebelum
+                    </label>
+                    <input type="file" id="before_image" name="before_image" accept="image/jpeg,image/png,image/jpg" 
+                      class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                    <p class="text-xs text-gray-500 mt-1">JPG/PNG, Max 5MB</p>
+                    <div id="before_preview" class="mt-2"></div>
+                  </div>
+                  <div>
+                    <label for="after_image" class="block text-sm font-medium text-gray-700 mb-2">
+                      Foto Kondisi Sesudah
+                    </label>
+                    <input type="file" id="after_image" name="after_image" accept="image/jpeg,image/png,image/jpg" 
+                      class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                    <p class="text-xs text-gray-500 mt-1">JPG/PNG, Max 5MB</p>
+                    <div id="after_preview" class="mt-2"></div>
+                  </div>
+                </div>
+
+                <div class="flex gap-4 pt-4">
+                  <button type="button" id="saveDraftBtn" ${isLoading ? 'disabled' : ''}
+                    class="flex-1 bg-yellow-500 hover:bg-yellow-600 disabled:bg-gray-400 text-white font-semibold py-3 rounded-lg transition duration-200">
+                    ${isLoading ? '⏳ Menyimpan...' : '💾 Simpan Draft'}
+                  </button>
+                  <button type="submit" ${isLoading ? 'disabled' : ''}
+                    class="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-semibold py-3 rounded-lg transition duration-200">
+                    ${isLoading ? '⏳ Mengirim...' : '🚀 Submit'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderMyImprovements() {
+      const myImprovements = allImprovements.filter(imp => imp.creator_nik === currentUser.nik);
+      const filteredImprovements = getFilteredImprovements();
+      
+      return `
+        <div class="min-h-full p-6">
+          <div class="max-w-7xl mx-auto">
+            <div class="bg-white rounded-xl shadow-lg p-6 mb-6">
+              <div class="flex justify-between items-center">
+                <h1 class="text-2xl font-bold text-gray-800">📋 Improvement Saya</h1>
+                <button onclick="currentView='dashboard'; render();" 
+                  class="bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded-lg transition duration-200">
+                  ← Kembali
+                </button>
+              </div>
+            </div>
+
+            <div class="bg-white rounded-xl shadow-lg p-6 mb-6">
+              <div class="mb-4">
+                <p class="text-sm font-semibold text-gray-700 mb-3">Filter berdasarkan status:</p>
+                <div class="flex gap-2 flex-wrap">
+                  <button onclick="setFilter('all')" class="filter-btn ${currentFilter === 'all' ? 'active' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}">
+                    Semua (${myImprovements.length})
+                  </button>
+                  <button onclick="setFilter('draft')" class="filter-btn ${currentFilter === 'draft' ? 'active' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}">
+                    Draft (${myImprovements.filter(i => i.status === 'draft').length})
+                  </button>
+                  <button onclick="setFilter('waiting_l2')" class="filter-btn ${currentFilter === 'waiting_l2' ? 'active' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}">
+                    Waiting L2 (${myImprovements.filter(i => i.status === 'waiting_l2').length})
+                  </button>
+                  <button onclick="setFilter('waiting_l3')" class="filter-btn ${currentFilter === 'waiting_l3' ? 'active' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}">
+                    Waiting L3 (${myImprovements.filter(i => i.status === 'waiting_l3').length})
+                  </button>
+                  <button onclick="setFilter('waiting_l4')" class="filter-btn ${currentFilter === 'waiting_l4' ? 'active' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}">
+                    Waiting L4 (${myImprovements.filter(i => i.status === 'waiting_l4').length})
+                  </button>
+                  <button onclick="setFilter('approved')" class="filter-btn ${currentFilter === 'approved' ? 'active' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}">
+                    Approved (${myImprovements.filter(i => i.status === 'approved').length})
+                  </button>
+                  <button onclick="setFilter('rejected')" class="filter-btn ${currentFilter === 'rejected' ? 'active' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}">
+                    Rejected (${myImprovements.filter(i => i.status === 'rejected').length})
+                  </button>
+                </div>
+              </div>
+
+              <div class="border-t border-gray-200 pt-4">
+                <p class="text-sm font-semibold text-gray-700 mb-3">Filter berdasarkan tanggal:</p>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div>
+                    <label for="dateFrom" class="block text-xs text-gray-600 mb-1">Dari Tanggal:</label>
+                    <input type="date" id="dateFrom" onchange="filterByDate()" 
+                      class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm">
+                  </div>
+                  <div>
+                    <label for="dateTo" class="block text-xs text-gray-600 mb-1">Sampai Tanggal:</label>
+                    <input type="date" id="dateTo" onchange="filterByDate()" 
+                      class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm">
+                  </div>
+                  <div class="flex items-end">
+                    <button onclick="resetDateFilter()" 
+                      class="w-full bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded-lg transition duration-200 text-sm">
+                      🔄 Reset Filter
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            ${filteredImprovements.length === 0 ? `
+              <div class="bg-white rounded-xl shadow-lg p-12 text-center">
+                <p class="text-gray-500 text-lg">Tidak ada improvement yang sesuai filter</p>
+              </div>
+            ` : `
+              <div class="grid grid-cols-1 gap-4">
+                ${filteredImprovements.map(imp => renderImprovementCard(imp, true)).join('')}
+              </div>
+            `}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderApprovals() {
+      const pendingApproval = allImprovements.filter(imp => {
+        if (currentUser.level === 2 && imp.status === 'waiting_l2') return true;
+        if (currentUser.level === 3 && imp.status === 'waiting_l3') return true;
+        if (currentUser.level === 4 && imp.status === 'waiting_l4') return true;
+        return false;
+      });
+
+      return `
+        <div class="min-h-full p-6">
+          <div class="max-w-7xl mx-auto">
+            <div class="bg-white rounded-xl shadow-lg p-6 mb-6">
+              <div class="flex justify-between items-center">
+                <h1 class="text-2xl font-bold text-gray-800">✅ Perlu Approval</h1>
+                <button onclick="currentView='dashboard'; render();" 
+                  class="bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded-lg transition duration-200">
+                  ← Kembali
+                </button>
+              </div>
+            </div>
+
+            ${pendingApproval.length === 0 ? `
+              <div class="bg-white rounded-xl shadow-lg p-12 text-center">
+                <p class="text-gray-500 text-lg">Tidak ada improvement yang perlu di-approve</p>
+              </div>
+            ` : `
+              <div class="grid grid-cols-1 gap-4">
+                ${pendingApproval.map(imp => renderImprovementCard(imp, false)).join('')}
+              </div>
+            `}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderImprovementCard(imp, isOwner) {
+      const canApprove = !isOwner && (
+        (currentUser.level === 2 && imp.status === 'waiting_l2') ||
+        (currentUser.level === 3 && imp.status === 'waiting_l3') ||
+        (currentUser.level === 4 && imp.status === 'waiting_l4')
+      );
+
+      const canEdit = isOwner && imp.status === 'draft';
+      const canDelete = isOwner && imp.status === 'draft';
+
+      return `
+        <div class="bg-white rounded-xl shadow-lg p-6">
+          <div class="flex justify-between items-start mb-4">
+            <div class="flex-1">
+              <h3 class="text-xl font-bold text-gray-800">${imp.title}</h3>
+              <p class="text-sm text-gray-600 mt-1">
+                Oleh: ${imp.creator_name} (${imp.creator_nik}) • ${new Date(imp.created_at).toLocaleDateString('id-ID')}
+              </p>
+            </div>
+            <span class="px-4 py-2 rounded-full text-sm font-semibold ${getStatusColor(imp.status)}">
+              ${getStatusText(imp.status)}
+            </span>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div>
+              <p class="text-sm font-semibold text-gray-700 mb-1">Tema:</p>
+              <p class="text-gray-600">${imp.tema}</p>
+            </div>
+            <div>
+              <p class="text-sm font-semibold text-gray-700 mb-1">Ruangan:</p>
+              <p class="text-gray-600">${imp.room_name}</p>
+            </div>
+            ${imp.machine_name ? `
+              <div>
+                <p class="text-sm font-semibold text-gray-700 mb-1">Mesin:</p>
+                <p class="text-gray-600">${imp.machine_name}</p>
+              </div>
+            ` : ''}
+          </div>
+
+          <div class="space-y-3 mb-4">
+            <div>
+              <p class="text-sm font-semibold text-gray-700 mb-1">Permasalahan:</p>
+              <p class="text-gray-600">${imp.problem}</p>
+            </div>
+            <div>
+              <p class="text-sm font-semibold text-gray-700 mb-1">Improvement:</p>
+              <p class="text-gray-600">${imp.solution}</p>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div class="bg-red-50 rounded-lg p-3 border border-red-200">
+              <p class="text-sm font-semibold text-red-700 mb-1">Total Biaya:</p>
+              <p class="text-red-800 font-bold">${imp.total_cost}</p>
+              <p class="text-xs text-red-600 mt-2">${imp.cost_detail}</p>
+            </div>
+            <div class="bg-green-50 rounded-lg p-3 border border-green-200">
+              <p class="text-sm font-semibold text-green-700 mb-1">Total Keuntungan:</p>
+              <p class="text-green-800 font-bold">${imp.total_benefit}</p>
+              <p class="text-xs text-green-600 mt-2">${imp.benefit_detail}</p>
+            </div>
+          </div>
+
+          ${imp.before_image_url || imp.after_image_url ? `
+            <div class="grid grid-cols-2 gap-4 mb-4">
+              ${imp.before_image_url ? `
+                <div>
+                  <p class="text-sm font-semibold text-gray-700 mb-2">Kondisi Sebelum:</p>
+                  <img src="${imp.before_image_url}" alt="Before" class="w-full rounded-lg shadow-md">
+                </div>
+              ` : ''}
+              ${imp.after_image_url ? `
+                <div>
+                  <p class="text-sm font-semibold text-gray-700 mb-2">Kondisi Sesudah:</p>
+                  <img src="${imp.after_image_url}" alt="After" class="w-full rounded-lg shadow-md">
+                </div>
+              ` : ''}
+            </div>
+          ` : ''}
+
+          ${imp.status === 'approved' ? `
+            <div class="bg-green-50 rounded-lg p-4 border border-green-200">
+              <p class="text-sm font-semibold text-green-700 mb-2">✅ Approval History:</p>
+              ${imp.approved_by_l2 ? `<p class="text-xs text-green-600">L2: ${imp.approved_by_l2} pada ${new Date(imp.approved_at_l2).toLocaleDateString('id-ID')}</p>` : ''}
+              ${imp.approved_by_l3 ? `<p class="text-xs text-green-600">L3: ${imp.approved_by_l3} pada ${new Date(imp.approved_at_l3).toLocaleDateString('id-ID')}</p>` : ''}
+              ${imp.approved_by_l4 ? `<p class="text-xs text-green-600">L4: ${imp.approved_by_l4} pada ${new Date(imp.approved_at_l4).toLocaleDateString('id-ID')}</p>` : ''}
+            </div>
+          ` : ''}
+
+          ${imp.status === 'rejected' ? `
+            <div class="bg-red-50 rounded-lg p-4 border border-red-200">
+              <p class="text-sm font-semibold text-red-700 mb-1">❌ Ditolak oleh: ${imp.rejected_by}</p>
+              <p class="text-sm text-red-600">Alasan: ${imp.rejection_reason}</p>
+              <p class="text-xs text-red-500 mt-1">${new Date(imp.rejected_at).toLocaleDateString('id-ID')}</p>
+            </div>
+          ` : ''}
+
+          <div class="flex gap-2 mt-4">
+            ${canApprove ? `
+              <button onclick="approveImprovement('${imp.id}')" ${isLoading ? 'disabled' : ''}
+                class="flex-1 bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white font-semibold py-2 rounded-lg transition duration-200">
+                ✅ Approve
+              </button>
+              <button onclick="showRejectForm('${imp.id}')" ${isLoading ? 'disabled' : ''}
+                class="flex-1 bg-red-600 hover:bg-red-700 disabled:bg-gray-400 text-white font-semibold py-2 rounded-lg transition duration-200">
+                ❌ Reject
+              </button>
+            ` : ''}
+            ${canEdit ? `
+              <button onclick="editDraft('${imp.id}')" 
+                class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 rounded-lg transition duration-200">
+                ✏️ Edit
+              </button>
+            ` : ''}
+            ${canDelete ? `
+              <button onclick="confirmDelete('${imp.id}')" 
+                class="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold py-2 rounded-lg transition duration-200">
+                🗑️ Hapus
+              </button>
+            ` : ''}
+          </div>
+        </div>
+      `;
+    }
+
+    function getStatusColor(status) {
+      const colors = {
+        'draft': 'bg-yellow-100 text-yellow-800',
+        'waiting_l2': 'bg-orange-100 text-orange-800',
+        'waiting_l3': 'bg-blue-100 text-blue-800',
+        'waiting_l4': 'bg-purple-100 text-purple-800',
+        'approved': 'bg-green-100 text-green-800',
+        'rejected': 'bg-red-100 text-red-800'
+      };
+      return colors[status] || 'bg-gray-100 text-gray-800';
+    }
+
+    function getStatusText(status) {
+      const texts = {
+        'draft': 'Draft',
+        'waiting_l2': 'Menunggu L2',
+        'waiting_l3': 'Menunggu L3',
+        'waiting_l4': 'Menunggu L4',
+        'approved': 'Approved',
+        'rejected': 'Rejected'
+      };
+      return texts[status] || status;
+    }
+
+    // Main render
+    function render() {
+      const app = document.getElementById('app');
+      
+      if (!currentUser) {
+        app.innerHTML = renderLogin();
+        setupLoginForm();
+      } else {
+        switch(currentView) {
+          case 'dashboard':
+            app.innerHTML = renderDashboard();
+            break;
+          case 'create':
+            app.innerHTML = renderCreateForm();
+            setupCreateForm();
+            break;
+          case 'my-improvements':
+            app.innerHTML = renderMyImprovements();
+            break;
+          case 'approvals':
+            app.innerHTML = renderApprovals();
+            break;
+          case 'users':
+            app.innerHTML = renderUserManagement();
+            setupUserManagement();
+            break;
+          default:
+            app.innerHTML = renderDashboard();
+        }
+      }
+    }
+
+    function setupLoginForm() {
+      const form = document.getElementById('loginForm');
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const nik = document.getElementById('nik').value;
+        const password = document.getElementById('password').value;
+        
+        const success = await login(nik, password);
+        if (success) {
+          currentView = 'dashboard';
+          render();
+        }
+      });
+    }
+
+    function setupUserManagement() {
+      const csvInput = document.getElementById('csvFileInput');
+      if (csvInput) {
+        csvInput.addEventListener('change', async (e) => {
+          const file = e.target.files[0];
+          if (file) {
+            await uploadCSV(file);
+            e.target.value = ''; // Reset input
+          }
+        });
+      }
+    }
+
+    function setupCreateForm() {
+      const form = document.getElementById('createForm');
+      const beforeInput = document.getElementById('before_image');
+      const afterInput = document.getElementById('after_image');
+      const saveDraftBtn = document.getElementById('saveDraftBtn');
+
+      beforeInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (file) {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            document.getElementById('before_preview').innerHTML = 
+              `<img src="${e.target.result}" class="image-preview">`;
+          };
+          reader.readAsDataURL(file);
+        }
+      });
+
+      afterInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (file) {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            document.getElementById('after_preview').innerHTML = 
+              `<img src="${e.target.result}" class="image-preview">`;
+          };
+          reader.readAsDataURL(file);
+        }
+      });
+
+      saveDraftBtn.addEventListener('click', async () => {
+        await handleFormSubmit(true);
+      });
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        await handleFormSubmit(false);
+      });
+
+      async function handleFormSubmit(isDraft) {
+        const formData = {
+          title: document.getElementById('title').value,
+          tema: document.getElementById('tema').value,
+          room_name: document.getElementById('room_name').value,
+          machine_name: document.getElementById('machine_name').value,
+          problem: document.getElementById('problem').value,
+          solution: document.getElementById('solution').value,
+          total_cost: document.getElementById('total_cost').value,
+          cost_detail: document.getElementById('cost_detail').value,
+          total_benefit: document.getElementById('total_benefit').value,
+          benefit_detail: document.getElementById('benefit_detail').value,
+          beforeImage: beforeInput.files[0] || null,
+          afterImage: afterInput.files[0] || null
+        };
+
+        if (!isDraft) {
+          if (!formData.title || !formData.tema || !formData.room_name || 
+              !formData.problem || !formData.solution || !formData.total_cost || 
+              !formData.cost_detail || !formData.total_benefit || !formData.benefit_detail) {
+            showToast('Mohon isi semua field yang wajib!', true);
+            return;
+          }
+        }
+
+        await createImprovement(formData, isDraft);
+      }
+    }
+
+    // Expose functions to global scope
+    window.logout = logout;
+    window.approveImprovement = approveImprovement;
+    window.showRejectForm = showRejectForm;
+    window.confirmDelete = confirmDelete;
+    window.editDraft = editDraft;
+    window.setFilter = setFilter;
+    window.filterByDate = filterByDate;
+    window.resetDateFilter = resetDateFilter;
+    window.render = render;
+    window.closeModal = closeModal;
+    window.confirmModalAction = confirmModalAction;
+
+    // Initialize
+    window.addEventListener('DOMContentLoaded', () => {
+      render();
+    });
+  </script>
+ <script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'9af2193786b455de',t:'MTc2NTkyOTE4OS4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
